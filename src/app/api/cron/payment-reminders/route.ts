@@ -19,7 +19,11 @@ export async function GET(req: Request) {
   }
 
   const supabase = createAdminClient();
-  await supabase.rpc('mark_overdue_payments').catch(() => {});
+  try {
+    await supabase.rpc('mark_overdue_payments');
+  } catch {
+    // ignore – best-effort overdue marking
+  }
 
   const today = new Date().toISOString().slice(0, 10);
   const { data: payments, error } = await supabase
