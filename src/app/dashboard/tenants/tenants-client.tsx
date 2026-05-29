@@ -25,7 +25,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Plus, Pencil, Trash2, Download, MessageCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { downloadCSV, formatDate, waLink } from '@/lib/format';
+import { downloadCSV, formatDate, waLink, photoPublicUrl } from '@/lib/format';
 import { HoldDialog } from '@/components/hold-dialog';
 import type { Tenant, Room, Role } from '@/lib/types';
 

@@ -44,6 +44,7 @@ function addPeriod(d: Date, p: RecurringPeriod): Date {
     case 'monthly': return addMonths(d, 1);
     case 'quarterly': return addMonths(d, 3);
     case 'yearly': return addMonths(d, 12);
+    default: return addMonths(d, 1);
   }
 }
 

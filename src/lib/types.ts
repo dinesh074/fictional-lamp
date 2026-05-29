@@ -5,6 +5,23 @@ export type TenantStatus = 'active' | 'inactive';
 export type LedgerType = 'charge' | 'payment' | 'adjustment' | 'store_purchase' | 'refund';
 export type StorePaymentMethod = 'cash' | 'upi' | 'ledger' | 'card' | 'other';
 export type NotificationChannel = 'whatsapp' | 'sms' | 'email' | 'manual';
+export type ExpenseCategory =
+  | 'purchase'
+  | 'utility_bill'
+  | 'salary'
+  | 'rent'
+  | 'maintenance'
+  | 'tax'
+  | 'other';
+export type ExpensePaymentMethod =
+  | 'cash'
+  | 'upi'
+  | 'bank_transfer'
+  | 'card'
+  | 'cheque'
+  | 'other';
+export type ExpenseStatus = 'paid' | 'pending' | 'scheduled';
+export type RecurringPeriod = 'weekly' | 'monthly' | 'quarterly' | 'yearly';
 
 export interface Profile {
   id: string;

@@ -39,7 +39,7 @@ export function StoreClient({ role: _role }: { role: Role }) {
       supabase.from('store_sales').select('*, tenant:tenants(id,name)').order('created_at', { ascending: false }).limit(10),
     ]);
     setProducts((p.data as Product[]) ?? []);
-    setTenants((t.data as Tenant[]) ?? []);
+    setTenants(((t.data as unknown) as Tenant[]) ?? []);
     setSettings((s.data as Settings) ?? null);
     setRecent((r.data as StoreSale[]) ?? []);
   }

@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/table';
 import { downloadCSV, formatINR, formatDate, toISODate } from '@/lib/format';
 import { tenantOnHold } from '@/lib/dues';
-import type { Building, Payment, Role, StoreSale, Tenant, LedgerEntry } from '@/lib/types';
+import type { Building, Payment, Role, StoreSale, Tenant, LedgerEntry, Expense } from '@/lib/types';
 
 interface Row {
   tenant: Tenant;
