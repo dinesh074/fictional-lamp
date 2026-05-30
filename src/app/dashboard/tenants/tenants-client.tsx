@@ -25,9 +25,10 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Plus, Pencil, Trash2, Download, MessageCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { downloadCSV, formatDate, waLink, photoPublicUrl } from '@/lib/format';
+import { downloadCSV, formatDate, photoPublicUrl } from '@/lib/format';
 import { HoldDialog } from '@/components/hold-dialog';
-import type { Tenant, Room, Role } from '@/lib/types';
+import { WaMessageDialog } from '@/components/wa-message-dialog';
+import type { Tenant, Room, Role, Settings, Building } from '@/lib/types';
 
 type TenantForm = Partial<Tenant>;
 
@@ -35,18 +36,22 @@ export function TenantsClient({ role }: { role: Role }) {
   const supabase = createClient();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [buildings, setBuildings] = useState<Building[]>([]);
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [buildingFilter, setBuildingFilter] = useState<string>('all');
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Tenant | null>(null);
   const [form, setForm] = useState<TenantForm>({});
   const [holdTenant, setHoldTenant] = useState<Tenant | null>(null);
+  const [waTenant, setWaTenant] = useState<Tenant | null>(null);
 
   async function load() {
     setLoading(true);
-    const [t, r] = await Promise.all([
+    const [t, r, b, s] = await Promise.all([
       supabase
         .from('tenants')
         .select('*, room:rooms(*, building:buildings(*))')
@@ -55,11 +60,15 @@ export function TenantsClient({ role }: { role: Role }) {
         .from('rooms')
         .select('*, building:buildings(*)')
         .order('room_number'),
+      supabase.from('buildings').select('*').order('name'),
+      supabase.from('settings').select('*').eq('id', 1).single(),
     ]);
     if (t.error) toast.error(t.error.message);
     if (r.error) toast.error(r.error.message);
     setTenants((t.data as Tenant[]) ?? []);
     setRooms((r.data as Room[]) ?? []);
+    setBuildings((b.data as Building[]) ?? []);
+    setSettings((s.data as Settings) ?? null);
     setLoading(false);
   }
   useEffect(() => {
@@ -111,9 +120,57 @@ export function TenantsClient({ role }: { role: Role }) {
     load();
   }
 
+  // Active occupants per room (used to hide full rooms in the assignment dropdown)
+  const occByRoom = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const t of tenants) {
+      if (t.status === 'active' && t.room_id) {
+        m.set(t.room_id, (m.get(t.room_id) ?? 0) + 1);
+      }
+    }
+    return m;
+  }, [tenants]);
+
+  // Group rooms under their building for the <optgroup> dropdown
+  const roomsGroupedByBuilding = useMemo(() => {
+    const groups = new Map<string, { buildingId: string; buildingName: string; rooms: Room[] }>();
+    for (const r of rooms) {
+      const bid = r.building_id ?? 'unassigned';
+      const bname = r.building?.name ?? 'Unassigned';
+      if (!groups.has(bid)) groups.set(bid, { buildingId: bid, buildingName: bname, rooms: [] });
+      groups.get(bid)!.rooms.push(r);
+    }
+    return Array.from(groups.values()).sort((a, b) => a.buildingName.localeCompare(b.buildingName));
+  }, [rooms]);
+
+  // Building-wise available beds, used by the 'availability' WA template
+  const availability = useMemo(() => {
+    let totalAvailable = 0;
+    const parts: string[] = [];
+    for (const b of buildings) {
+      const bRooms = rooms.filter((r) => r.building_id === b.id);
+      const cap = bRooms.reduce((s, r) => s + (r.capacity ?? 0), 0);
+      const occ = bRooms.reduce((s, r) => s + (occByRoom.get(r.id) ?? 0), 0);
+      const avail = Math.max(0, cap - occ);
+      totalAvailable += avail;
+      if (avail > 0) parts.push(`${b.name}: ${avail}`);
+    }
+    return {
+      availableBeds: totalAvailable,
+      buildingSummary: parts.length ? parts.join(', ') : 'all rooms full',
+    };
+  }, [buildings, rooms, occByRoom]);
+
   const filtered = useMemo(() => {
     return tenants.filter((t) => {
       if (statusFilter !== 'all' && t.status !== statusFilter) return false;
+      if (buildingFilter !== 'all') {
+        if (buildingFilter === 'unassigned') {
+          if (t.room?.building?.id) return false;
+        } else if (t.room?.building?.id !== buildingFilter) {
+          return false;
+        }
+      }
       if (search) {
         const q = search.toLowerCase();
         return (
@@ -125,7 +182,7 @@ export function TenantsClient({ role }: { role: Role }) {
       }
       return true;
     });
-  }, [tenants, search, statusFilter]);
+  }, [tenants, search, statusFilter, buildingFilter]);
 
   function exportCSV() {
     const rows = filtered.map((t) => ({
@@ -204,12 +261,28 @@ export function TenantsClient({ role }: { role: Role }) {
                     }
                   >
                     <option value="">Unassigned</option>
-                    {rooms.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.building?.name} – {r.room_number}
-                      </option>
+                    {roomsGroupedByBuilding.map(({ buildingId, buildingName, rooms: bRooms }) => (
+                      <optgroup key={buildingId} label={buildingName}>
+                        {bRooms.map((r) => {
+                          const occ = occByRoom.get(r.id) ?? 0;
+                          const occForThis =
+                            editing && editing.room_id === r.id ? occ - 1 : occ;
+                          const isFull = occForThis >= r.capacity;
+                          const isCurrent = editing?.room_id === r.id;
+                          if (isFull && !isCurrent) return null;
+                          return (
+                            <option key={r.id} value={r.id}>
+                              {r.room_number} ({occForThis}/{r.capacity})
+                              {isCurrent ? ' • current' : ''}
+                            </option>
+                          );
+                        })}
+                      </optgroup>
                     ))}
                   </select>
+                  <p className="text-[11px] text-muted-foreground">
+                    Fully-occupied rooms are hidden. Numbers show current / capacity.
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label>Aadhar</Label>
@@ -330,6 +403,18 @@ export function TenantsClient({ role }: { role: Role }) {
               <option value="active">Active</option>
               <option value="inactive">Inactive</option>
             </select>
+            <select
+              className="border rounded-md h-9 px-2 bg-background text-sm"
+              value={buildingFilter}
+              onChange={(e) => setBuildingFilter(e.target.value)}
+              title="Filter by building"
+            >
+              <option value="all">All buildings</option>
+              <option value="unassigned">Unassigned</option>
+              {buildings.map((b) => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
+            </select>
           </div>
         </CardHeader>
         <CardContent className="overflow-x-auto">
@@ -399,15 +484,14 @@ export function TenantsClient({ role }: { role: Role }) {
                   </TableCell>
                   <TableCell className="text-right space-x-1">
                     {t.phone && (
-                      <a
-                        className={buttonVariants({ variant: 'ghost', size: 'icon' })}
-                        title="WhatsApp"
-                        href={waLink(t.phone, `Hi ${t.name}, this is a message from your PG.`)}
-                        target="_blank"
-                        rel="noreferrer"
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        title="Send WhatsApp message"
+                        onClick={() => setWaTenant(t)}
                       >
                         <MessageCircle className="size-4 text-green-600" />
-                      </a>
+                      </Button>
                     )}
                     <Button size="icon" variant="ghost" onClick={() => openEdit(t)}>
                       <Pencil className="size-4" />
@@ -431,6 +515,17 @@ export function TenantsClient({ role }: { role: Role }) {
         onOpenChange={(v) => { if (!v) setHoldTenant(null); }}
         onSaved={load}
       />
+
+      {waTenant && (
+        <WaMessageDialog
+          open={waTenant !== null}
+          onOpenChange={(v) => { if (!v) setWaTenant(null); }}
+          tenant={waTenant}
+          settings={settings}
+          availability={availability}
+        />
+      )}
     </div>
   );
 }
+

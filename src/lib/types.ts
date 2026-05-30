@@ -22,6 +22,13 @@ export type ExpensePaymentMethod =
   | 'other';
 export type ExpenseStatus = 'paid' | 'pending' | 'scheduled';
 export type RecurringPeriod = 'weekly' | 'monthly' | 'quarterly' | 'yearly';
+export type WaTemplateCategory =
+  | 'payment'
+  | 'invitation'
+  | 'celebration'
+  | 'offer'
+  | 'availability'
+  | 'generic';
 
 export interface Profile {
   id: string;
@@ -202,3 +209,15 @@ export interface Expense {
   staff?: Profile;
 }
 
+export interface WaTemplate {
+  id: string;
+  key: string;
+  label: string;
+  category: WaTemplateCategory;
+  body: string;
+  enabled: boolean;
+  sort_order: number;
+  is_system: boolean;
+  created_at: string;
+  updated_at: string;
+}

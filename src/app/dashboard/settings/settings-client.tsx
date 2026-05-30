@@ -1,14 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
-import { KeyRound, Save, Building2, IndianRupee } from 'lucide-react';
-import type { Settings } from '@/lib/types';
+import { KeyRound, Save, Building2, IndianRupee, MessageCircle, Plus, Trash2, RotateCcw } from 'lucide-react';
+import type { Settings, WaTemplate, WaTemplateCategory } from '@/lib/types';
 
 export function SettingsClient({ initial }: { initial: Settings }) {
   const supabase = createClient();
@@ -208,7 +210,198 @@ export function SettingsClient({ initial }: { initial: Settings }) {
           </form>
         </CardContent>
       </Card>
+
+      <WaTemplatesCard />
     </div>
+  );
+}
+
+// =====================================================================
+// WhatsApp templates manager
+// =====================================================================
+
+const PLACEHOLDER_HELP: { token: string; desc: string }[] = [
+  { token: '{{tenant_name}}', desc: 'Recipient tenant name' },
+  { token: '{{hostel_name}}', desc: 'Your hostel name' },
+  { token: '{{hostel_phone}}', desc: 'Hostel contact phone' },
+  { token: '{{contact_line}}', desc: '" Contact: <phone>." or empty' },
+  { token: '{{upi_line}}', desc: 'UPI pay line (auto-filled if available)' },
+  { token: '{{upi_vpa}}', desc: 'UPI ID alone' },
+  { token: '{{room}}', desc: 'Tenant room number' },
+  { token: '{{building}}', desc: 'Tenant building name' },
+  { token: '{{amount}}', desc: 'Payment amount (₹)' },
+  { token: '{{period_month}}', desc: 'Rent month, e.g. May 2026' },
+  { token: '{{due_date}}', desc: 'Rent due date' },
+  { token: '{{available_beds}}', desc: 'Beds available across hostel' },
+  { token: '{{building_summary}}', desc: 'Comma list of building → beds' },
+  { token: '{{event_name}}', desc: 'Custom (invitation)' },
+  { token: '{{event_date}}', desc: 'Custom (invitation)' },
+  { token: '{{occasion}}', desc: 'Custom (celebration)' },
+  { token: '{{offer_details}}', desc: 'Custom (offer)' },
+  { token: '{{valid_till}}', desc: 'Custom (offer)' },
+];
+
+const CATEGORIES: WaTemplateCategory[] = [
+  'payment', 'invitation', 'celebration', 'offer', 'availability', 'generic',
+];
+
+function WaTemplatesCard() {
+  const supabase = createClient();
+  const [items, setItems] = useState<WaTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [dirty, setDirty] = useState<Record<string, boolean>>({});
+  const [saving, setSaving] = useState<Record<string, boolean>>({});
+
+  async function load() {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('wa_templates')
+      .select('*')
+      .order('sort_order');
+    setLoading(false);
+    if (error) return toast.error(error.message);
+    setItems((data as WaTemplate[]) ?? []);
+    setDirty({});
+  }
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  function patch(id: string, p: Partial<WaTemplate>) {
+    setItems((arr) => arr.map((t) => (t.id === id ? { ...t, ...p } : t)));
+    setDirty((d) => ({ ...d, [id]: true }));
+  }
+
+  async function saveOne(t: WaTemplate) {
+    setSaving((s) => ({ ...s, [t.id]: true }));
+    const { error } = await supabase
+      .from('wa_templates')
+      .update({
+        label: t.label,
+        body: t.body,
+        category: t.category,
+        enabled: t.enabled,
+        sort_order: t.sort_order,
+      })
+      .eq('id', t.id);
+    setSaving((s) => ({ ...s, [t.id]: false }));
+    if (error) return toast.error(error.message);
+    setDirty((d) => ({ ...d, [t.id]: false }));
+    toast.success(`"${t.label}" saved`);
+  }
+
+  async function addNew() {
+    const key = `custom_${Date.now()}`;
+    const { data, error } = await supabase
+      .from('wa_templates')
+      .insert({
+        key, label: 'New template', category: 'generic',
+        body: 'Hi {{tenant_name}}, …', sort_order: 200, enabled: true, is_system: false,
+      })
+      .select()
+      .single();
+    if (error) return toast.error(error.message);
+    setItems((arr) => [...arr, data as WaTemplate]);
+    toast.success('Template added');
+  }
+
+  async function removeOne(t: WaTemplate) {
+    if (t.is_system) return toast.error('System templates cannot be deleted (disable instead).');
+    if (!confirm(`Delete "${t.label}"?`)) return;
+    const { error } = await supabase.from('wa_templates').delete().eq('id', t.id);
+    if (error) return toast.error(error.message);
+    setItems((arr) => arr.filter((x) => x.id !== t.id));
+  }
+
+  return (
+    <Card className="border-l-4 border-l-emerald-500">
+      <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <CardTitle className="flex items-center gap-2">
+          <MessageCircle className="size-5 text-emerald-600" />WhatsApp templates
+        </CardTitle>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={load} disabled={loading}>
+            <RotateCcw className="size-4 mr-1" />Reload
+          </Button>
+          <Button size="sm" onClick={addNew}>
+            <Plus className="size-4 mr-1" />Add template
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <details className="text-xs text-muted-foreground bg-muted/40 rounded-md p-3">
+          <summary className="cursor-pointer font-medium text-foreground">
+            Available placeholders ({PLACEHOLDER_HELP.length})
+          </summary>
+          <div className="grid sm:grid-cols-2 gap-x-4 gap-y-1 mt-2">
+            {PLACEHOLDER_HELP.map((p) => (
+              <div key={p.token}>
+                <code className="text-emerald-700 dark:text-emerald-400">{p.token}</code>
+                {' — '}{p.desc}
+              </div>
+            ))}
+          </div>
+        </details>
+
+        {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
+        {!loading && items.length === 0 && (
+          <p className="text-sm text-muted-foreground">No templates yet.</p>
+        )}
+
+        <div className="space-y-4">
+          {items.map((t) => (
+            <div
+              key={t.id}
+              className={`border rounded-lg p-3 space-y-3 ${t.enabled ? '' : 'opacity-60'}`}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  className="flex-1 min-w-[200px] h-8"
+                  value={t.label}
+                  onChange={(e) => patch(t.id, { label: e.target.value })}
+                />
+                <select
+                  className="border rounded-md h-8 px-2 bg-background text-sm"
+                  value={t.category}
+                  onChange={(e) => patch(t.id, { category: e.target.value as WaTemplateCategory })}
+                >
+                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <label className="flex items-center gap-1 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={t.enabled}
+                    onChange={(e) => patch(t.id, { enabled: e.target.checked })}
+                  />
+                  Enabled
+                </label>
+                {t.is_system && <Badge variant="secondary" className="text-[10px]">system</Badge>}
+                <code className="text-[10px] text-muted-foreground">{t.key}</code>
+              </div>
+              <Textarea
+                rows={4}
+                value={t.body}
+                onChange={(e) => patch(t.id, { body: e.target.value })}
+                className="font-mono text-xs"
+              />
+              <div className="flex justify-end gap-2">
+                {!t.is_system && (
+                  <Button size="sm" variant="ghost" onClick={() => removeOne(t)}>
+                    <Trash2 className="size-4 text-destructive" />
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  disabled={!dirty[t.id] || saving[t.id]}
+                  onClick={() => saveOne(t)}
+                >
+                  <Save className="size-4 mr-1" />
+                  {saving[t.id] ? 'Saving…' : 'Save'}
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

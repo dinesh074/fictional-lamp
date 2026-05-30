@@ -59,3 +59,76 @@ export function renderTemplate(tpl: ReminderTemplate, ctx: ReminderContext): str
   }
 }
 
+// =====================================================================
+// Custom (user-editable) templates — placeholder substitution
+// =====================================================================
+
+/**
+ * Substitutes {{key}} placeholders in a template body.
+ * Unknown placeholders are left as-is so the sender can fill them.
+ */
+export function renderCustomTemplate(
+  body: string,
+  vars: Record<string, string | number | null | undefined>,
+): string {
+  return body.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, key) => {
+    const v = vars[key];
+    if (v === null || v === undefined || v === '') return `{{${key}}}`;
+    return String(v);
+  });
+}
+
+/** Common variables for a tenant-targeted message. */
+export interface TenantWaVars {
+  tenant_name: string;
+  hostel_name: string;
+  hostel_phone: string;
+  contact_line: string;     // " Contact: +91…" or ""
+  upi_line: string;         // "\nPay via UPI: …" or ""
+  upi_vpa: string;
+  room: string;
+  building: string;
+  amount: string;
+  period_month: string;
+  due_date: string;
+  available_beds: string;
+  building_summary: string;
+  // free-form, user fills in dialog
+  event_name: string;
+  event_date: string;
+  occasion: string;
+  offer_details: string;
+  valid_till: string;
+}
+
+export function buildTenantVars(opts: {
+  tenant: Pick<Tenant, 'name' | 'room'>;
+  settings: Pick<Settings, 'hostel_name' | 'hostel_phone' | 'upi_vpa'> | null;
+  payment?: Pick<Payment, 'amount' | 'period_month' | 'due_date'> | null;
+  upiLink?: string | null;
+  availableBeds?: number;
+  buildingSummary?: string;
+}): Partial<TenantWaVars> {
+  const hostel = opts.settings?.hostel_name ?? 'Your PG';
+  const phone = opts.settings?.hostel_phone ?? '';
+  const upi = opts.upiLink
+    ? `\nPay via UPI: ${opts.upiLink}`
+    : opts.settings?.upi_vpa
+      ? `\nUPI: ${opts.settings.upi_vpa}`
+      : '';
+  return {
+    tenant_name: opts.tenant.name,
+    hostel_name: hostel,
+    hostel_phone: phone,
+    contact_line: phone ? ` Contact: ${phone}.` : '',
+    upi_line: upi,
+    upi_vpa: opts.settings?.upi_vpa ?? '',
+    room: opts.tenant.room?.room_number ?? '',
+    building: opts.tenant.room?.building?.name ?? '',
+    amount: opts.payment ? formatINR(opts.payment.amount) : '',
+    period_month: opts.payment ? formatMonth(opts.payment.period_month) : '',
+    due_date: opts.payment ? formatDate(opts.payment.due_date) : '',
+    available_beds: opts.availableBeds !== undefined ? String(opts.availableBeds) : '',
+    building_summary: opts.buildingSummary ?? '',
+  };
+}
