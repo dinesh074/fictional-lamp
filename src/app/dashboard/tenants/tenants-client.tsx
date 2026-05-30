@@ -32,6 +32,20 @@ import type { Tenant, Room, Role, Settings, Building } from '@/lib/types';
 
 type TenantForm = Partial<Tenant>;
 
+interface RoomBucket {
+  roomId: string | null;
+  roomNumber: string;
+  capacity: number;
+  occupied: number;
+  tenants: Tenant[];
+}
+interface BuildingBucket {
+  buildingId: string | null;
+  buildingName: string;
+  rooms: RoomBucket[];
+  tenantCount: number;
+}
+
 export function TenantsClient({ role }: { role: Role }) {
   const supabase = createClient();
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -42,6 +56,7 @@ export function TenantsClient({ role }: { role: Role }) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [buildingFilter, setBuildingFilter] = useState<string>('all');
+  const [viewMode, setViewMode] = useState<'grouped' | 'list'>('grouped');
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Tenant | null>(null);
@@ -120,7 +135,7 @@ export function TenantsClient({ role }: { role: Role }) {
     load();
   }
 
-  // Active occupants per room (used to hide full rooms in the assignment dropdown)
+  // Active occupants per room
   const occByRoom = useMemo(() => {
     const m = new Map<string, number>();
     for (const t of tenants) {
@@ -140,7 +155,9 @@ export function TenantsClient({ role }: { role: Role }) {
       if (!groups.has(bid)) groups.set(bid, { buildingId: bid, buildingName: bname, rooms: [] });
       groups.get(bid)!.rooms.push(r);
     }
-    return Array.from(groups.values()).sort((a, b) => a.buildingName.localeCompare(b.buildingName));
+    return Array.from(groups.values()).sort((a, b) =>
+      a.buildingName.localeCompare(b.buildingName),
+    );
   }, [rooms]);
 
   // Building-wise available beds, used by the 'availability' WA template
@@ -183,6 +200,84 @@ export function TenantsClient({ role }: { role: Role }) {
       return true;
     });
   }, [tenants, search, statusFilter, buildingFilter]);
+
+  // Building → Room → tenants[] for the grouped view
+  const groupedView = useMemo<BuildingBucket[]>(() => {
+    const buildingMap = new Map<string, BuildingBucket>();
+    const isNarrowed = statusFilter === 'inactive' || !!search;
+
+    // Seed every visible building/room so empty rooms still appear
+    if (!isNarrowed) {
+      for (const r of rooms) {
+        const bid = r.building_id ?? 'unassigned';
+        if (buildingFilter !== 'all') {
+          if (buildingFilter === 'unassigned' && bid !== 'unassigned') continue;
+          if (buildingFilter !== 'unassigned' && bid !== buildingFilter) continue;
+        }
+        let bb = buildingMap.get(bid);
+        if (!bb) {
+          bb = {
+            buildingId: r.building_id ?? null,
+            buildingName: r.building?.name ?? 'Unassigned',
+            rooms: [],
+            tenantCount: 0,
+          };
+          buildingMap.set(bid, bb);
+        }
+        bb.rooms.push({
+          roomId: r.id,
+          roomNumber: r.room_number,
+          capacity: r.capacity,
+          occupied: occByRoom.get(r.id) ?? 0,
+          tenants: [],
+        });
+      }
+    }
+
+    for (const t of filtered) {
+      const bid = t.room?.building?.id ?? 'unassigned';
+      const bname = t.room?.building?.name ?? 'Unassigned';
+      let bb = buildingMap.get(bid);
+      if (!bb) {
+        bb = {
+          buildingId: t.room?.building?.id ?? null,
+          buildingName: bname,
+          rooms: [],
+          tenantCount: 0,
+        };
+        buildingMap.set(bid, bb);
+      }
+      bb.tenantCount += 1;
+      const rid = t.room?.id ?? null;
+      let rb = bb.rooms.find((r) => r.roomId === rid);
+      if (!rb) {
+        rb = {
+          roomId: rid,
+          roomNumber: t.room?.room_number ?? '—',
+          capacity: t.room?.capacity ?? 0,
+          occupied: rid ? occByRoom.get(rid) ?? 0 : 0,
+          tenants: [],
+        };
+        bb.rooms.push(rb);
+      }
+      rb.tenants.push(t);
+    }
+
+    return Array.from(buildingMap.values())
+      .map((bb) => ({
+        ...bb,
+        rooms: bb.rooms.sort((a, b) => {
+          if (a.roomId === null) return 1;
+          if (b.roomId === null) return -1;
+          return a.roomNumber.localeCompare(b.roomNumber, undefined, { numeric: true });
+        }),
+      }))
+      .sort((a, b) => {
+        if (a.buildingId === null) return 1;
+        if (b.buildingId === null) return -1;
+        return a.buildingName.localeCompare(b.buildingName);
+      });
+  }, [filtered, rooms, occByRoom, buildingFilter, statusFilter, search]);
 
   function exportCSV() {
     const rows = filtered.map((t) => ({
@@ -415,97 +510,126 @@ export function TenantsClient({ role }: { role: Role }) {
                 <option key={b.id} value={b.id}>{b.name}</option>
               ))}
             </select>
+            <div className="inline-flex rounded-md border h-9 overflow-hidden text-sm">
+              <button
+                type="button"
+                onClick={() => setViewMode('grouped')}
+                className={`px-3 ${viewMode === 'grouped' ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'}`}
+                title="Group by building & room"
+              >
+                Grouped
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('list')}
+                className={`px-3 border-l ${viewMode === 'list' ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'}`}
+                title="Flat list"
+              >
+                List
+              </button>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead className="hidden md:table-cell">Building / Room</TableHead>
-                <TableHead className="hidden sm:table-cell">Phone</TableHead>
-                <TableHead className="hidden lg:table-cell">Check-in</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading && (
+          {viewMode === 'grouped' ? (
+            <GroupedTenants
+              groups={groupedView}
+              loading={loading}
+              canDelete={canDelete}
+              onEdit={openEdit}
+              onRemove={remove}
+              onWa={setWaTenant}
+            />
+          ) : (
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={6}>Loading…</TableCell>
+                  <TableHead>Name</TableHead>
+                  <TableHead className="hidden md:table-cell">Building / Room</TableHead>
+                  <TableHead className="hidden sm:table-cell">Phone</TableHead>
+                  <TableHead className="hidden lg:table-cell">Check-in</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
-              )}
-              {!loading && filtered.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-muted-foreground">
-                    No tenants.
-                  </TableCell>
-                </TableRow>
-              )}
-              {filtered.map((t) => (
-                <TableRow key={t.id}>
-                  <TableCell className="font-medium">
-                    <div className="flex items-center gap-2">
-                      {t.photo_url ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={photoPublicUrl(t.photo_url) ?? ''}
-                          alt=""
-                          className="size-8 rounded-full object-cover border shrink-0"
-                        />
-                      ) : (
-                        <div className="size-8 rounded-full bg-muted border shrink-0" />
-                      )}
-                      <div className="min-w-0">
-                        <div className="truncate">{t.name}</div>
-                        <div className="md:hidden text-xs text-muted-foreground truncate">
-                          {t.room
-                            ? `${t.room.building?.name} / ${t.room.room_number}`
-                            : 'Unassigned'}
+              </TableHeader>
+              <TableBody>
+                {loading && (
+                  <TableRow>
+                    <TableCell colSpan={6}>Loading…</TableCell>
+                  </TableRow>
+                )}
+                {!loading && filtered.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-muted-foreground">
+                      No tenants.
+                    </TableCell>
+                  </TableRow>
+                )}
+                {filtered.map((t) => (
+                  <TableRow key={t.id}>
+                    <TableCell className="font-medium">
+                      <div className="flex items-center gap-2">
+                        {t.photo_url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={photoPublicUrl(t.photo_url) ?? ''}
+                            alt=""
+                            className="size-8 rounded-full object-cover border shrink-0"
+                          />
+                        ) : (
+                          <div className="size-8 rounded-full bg-muted border shrink-0" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="truncate">{t.name}</div>
+                          <div className="md:hidden text-xs text-muted-foreground truncate">
+                            {t.room
+                              ? `${t.room.building?.name} / ${t.room.room_number}`
+                              : 'Unassigned'}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    {t.room ? (
-                      `${t.room.building?.name} / ${t.room.room_number}`
-                    ) : (
-                      <span className="text-muted-foreground">Unassigned</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="hidden sm:table-cell">{t.phone || '-'}</TableCell>
-                  <TableCell className="hidden lg:table-cell">
-                    {formatDate(t.check_in_date)}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={t.status === 'active' ? 'default' : 'secondary'}>
-                      {t.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right space-x-1">
-                    {t.phone && (
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        title="Send WhatsApp message"
-                        onClick={() => setWaTenant(t)}
-                      >
-                        <MessageCircle className="size-4 text-green-600" />
+                    </TableCell>
+                    <TableCell className="hidden md:table-cell">
+                      {t.room ? (
+                        `${t.room.building?.name} / ${t.room.room_number}`
+                      ) : (
+                        <span className="text-muted-foreground">Unassigned</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="hidden sm:table-cell">{t.phone || '-'}</TableCell>
+                    <TableCell className="hidden lg:table-cell">
+                      {formatDate(t.check_in_date)}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={t.status === 'active' ? 'default' : 'secondary'}>
+                        {t.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right space-x-1">
+                      {t.phone && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          title="Send WhatsApp message"
+                          onClick={() => setWaTenant(t)}
+                        >
+                          <MessageCircle className="size-4 text-green-600" />
+                        </Button>
+                      )}
+                      <Button size="icon" variant="ghost" onClick={() => openEdit(t)}>
+                        <Pencil className="size-4" />
                       </Button>
-                    )}
-                    <Button size="icon" variant="ghost" onClick={() => openEdit(t)}>
-                      <Pencil className="size-4" />
-                    </Button>
-                    {canDelete && (
-                      <Button size="icon" variant="ghost" onClick={() => remove(t.id)}>
-                        <Trash2 className="size-4 text-destructive" />
-                      </Button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+                      {canDelete && (
+                        <Button size="icon" variant="ghost" onClick={() => remove(t.id)}>
+                          <Trash2 className="size-4 text-destructive" />
+                        </Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
 
@@ -525,6 +649,146 @@ export function TenantsClient({ role }: { role: Role }) {
           availability={availability}
         />
       )}
+    </div>
+  );
+}
+
+// =====================================================================
+// Grouped view: Building → Room → Tenants
+// =====================================================================
+
+function GroupedTenants({
+  groups, loading, canDelete, onEdit, onRemove, onWa,
+}: {
+  groups: BuildingBucket[];
+  loading: boolean;
+  canDelete: boolean;
+  onEdit: (t: Tenant) => void;
+  onRemove: (id: string) => void;
+  onWa: (t: Tenant) => void;
+}) {
+  if (loading) return <p className="text-sm text-muted-foreground py-4">Loading…</p>;
+  if (groups.length === 0) {
+    return <p className="text-sm text-muted-foreground py-4">No tenants match the filters.</p>;
+  }
+
+  return (
+    <div className="space-y-6">
+      {groups.map((bb) => (
+        <div key={bb.buildingId ?? 'unassigned'} className="space-y-3">
+          <div className="flex items-center gap-2 border-b pb-2">
+            <h3 className="font-semibold text-base">{bb.buildingName}</h3>
+            <Badge variant="secondary" className="text-[10px]">
+              {bb.tenantCount} tenant{bb.tenantCount === 1 ? '' : 's'}
+            </Badge>
+          </div>
+          {bb.rooms.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic pl-2">No rooms.</p>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2">
+              {bb.rooms.map((r) => {
+                const isFull = r.capacity > 0 && r.occupied >= r.capacity;
+                const isEmpty = r.occupied === 0;
+                return (
+                  <div key={r.roomId ?? 'none'} className="border rounded-lg p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium">
+                        Room {r.roomNumber}
+                        {r.roomId === null && (
+                          <span className="text-muted-foreground"> (unassigned)</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {r.roomId && (
+                          <span className="text-xs text-muted-foreground">
+                            {r.occupied}/{r.capacity}
+                          </span>
+                        )}
+                        {r.roomId && (isFull
+                          ? <Badge variant="destructive" className="text-[10px]">Full</Badge>
+                          : isEmpty
+                            ? <Badge variant="secondary" className="text-[10px]">Empty</Badge>
+                            : <Badge className="text-[10px]">{r.capacity - r.occupied} free</Badge>)}
+                      </div>
+                    </div>
+                    {r.tenants.length === 0 ? (
+                      <p className="text-xs text-muted-foreground italic">No tenants in this room.</p>
+                    ) : (
+                      <ul className="space-y-1.5">
+                        {r.tenants.map((t) => (
+                          <li
+                            key={t.id}
+                            className="flex items-center justify-between gap-2 rounded-md hover:bg-muted/40 px-2 py-1"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              {t.photo_url ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={photoPublicUrl(t.photo_url) ?? ''}
+                                  alt=""
+                                  className="size-7 rounded-full object-cover border shrink-0"
+                                />
+                              ) : (
+                                <div className="size-7 rounded-full bg-muted border shrink-0" />
+                              )}
+                              <div className="min-w-0">
+                                <div className="text-sm truncate">
+                                  {t.name}
+                                  {t.status !== 'active' && (
+                                    <Badge variant="secondary" className="ml-1 text-[9px]">
+                                      {t.status}
+                                    </Badge>
+                                  )}
+                                </div>
+                                {t.phone && (
+                                  <div className="text-[11px] text-muted-foreground truncate">
+                                    {t.phone}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex items-center shrink-0">
+                              {t.phone && (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="size-7"
+                                  title="WhatsApp"
+                                  onClick={() => onWa(t)}
+                                >
+                                  <MessageCircle className="size-3.5 text-green-600" />
+                                </Button>
+                              )}
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-7"
+                                onClick={() => onEdit(t)}
+                              >
+                                <Pencil className="size-3.5" />
+                              </Button>
+                              {canDelete && (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="size-7"
+                                  onClick={() => onRemove(t.id)}
+                                >
+                                  <Trash2 className="size-3.5 text-destructive" />
+                                </Button>
+                              )}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
