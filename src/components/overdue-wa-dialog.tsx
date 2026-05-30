@@ -109,7 +109,7 @@ export function OverdueWaDialog({
       payment: {
         amount: row.payment.amount,
         period_month: row.payment.period_month,
-        due_date: row.payment.due_date,
+        due_date: row.payment.due_date ?? '',
         status: row.payment.status,
       },
       upiLink: link,
