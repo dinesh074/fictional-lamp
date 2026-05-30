@@ -8,7 +8,7 @@ import { formatINR, monthStart, toISODate } from '@/lib/format';
 import { startOfMonth, endOfMonth } from 'date-fns';
 import {
   Building2, Users, Receipt, AlertTriangle, UserPlus, BedDouble,
-  CreditCard, Wallet, Settings as SettingsIcon,
+  CreditCard, Wallet, Settings as SettingsIcon, CalendarCheck2,
 } from 'lucide-react';
 
 export default async function DashboardPage({
@@ -122,6 +122,13 @@ export default async function DashboardPage({
               className={buttonVariants({ variant: 'outline', size: 'sm' }) + ' justify-start'}
             >
               <CreditCard className="size-4 mr-1" /> Record payment
+            </Link>
+            <Link
+              href="/dashboard/rent-tracker"
+              className={buttonVariants({ variant: 'outline', size: 'sm' }) + ' justify-start'}
+              title="Paid-till timeline per tenant"
+            >
+              <CalendarCheck2 className="size-4 mr-1" /> Rent tracker
             </Link>
             <Link
               href="/dashboard/expenses"

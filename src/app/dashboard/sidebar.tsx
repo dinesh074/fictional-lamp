@@ -19,6 +19,7 @@ import {
   ShoppingBag,
   CalendarRange,
   Wallet,
+  CalendarCheck2,
 } from 'lucide-react';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from '@/components/ui/sheet';
@@ -30,6 +31,7 @@ const NAV = [
   { href: '/dashboard/buildings', label: 'Buildings', icon: Building2, ownerOnly: false },
   { href: '/dashboard/tenants', label: 'Tenants', icon: Users, ownerOnly: false },
   { href: '/dashboard/payments', label: 'Payments', icon: Receipt, ownerOnly: false },
+  { href: '/dashboard/rent-tracker', label: 'Rent tracker', icon: CalendarCheck2, ownerOnly: false },
   { href: '/dashboard/ledger', label: 'Ledger', icon: BookOpen, ownerOnly: false },
   { href: '/dashboard/store', label: 'Store', icon: ShoppingBag, ownerOnly: false },
   { href: '/dashboard/expenses', label: 'Expenses', icon: Wallet, ownerOnly: false },

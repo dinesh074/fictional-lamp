@@ -23,14 +23,46 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Pencil, Trash2, Download, MessageCircle } from 'lucide-react';
+import { Plus, Pencil, Trash2, Download, MessageCircle, Check, X, Minus, Send } from 'lucide-react';
 import { toast } from 'sonner';
-import { downloadCSV, formatDate, photoPublicUrl } from '@/lib/format';
+import { downloadCSV, formatDate, formatMonth, photoPublicUrl } from '@/lib/format';
 import { HoldDialog } from '@/components/hold-dialog';
 import { WaMessageDialog } from '@/components/wa-message-dialog';
+import { OverdueWaDialog, type OverdueRow } from '@/components/overdue-wa-dialog';
 import type { Tenant, Room, Role, Settings, Building } from '@/lib/types';
 
+const TRACKER_YEAR = 2026;
+const MONTHS_WINDOW: string[] = Array.from({ length: 12 }, (_, i) =>
+  `${TRACKER_YEAR}-${String(i + 1).padStart(2, '0')}-01`,
+);
+const MONTH_LETTERS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
+const DUE_SOON_DAYS = 15;
+
+type DotStatus = 'paid' | 'missed' | 'duesoon' | 'upcoming' | 'before';
+interface MonthDot {
+  month: string;
+  status: DotStatus;
+  /** Day-difference to due-date (only meaningful for upcoming/duesoon/missed). */
+  daysToDue?: number;
+  dueDate?: string | null;
+}
+
 type TenantForm = Partial<Tenant>;
+
+interface PaymentLite {
+  tenant_id: string;
+  period_month: string;
+  status: 'paid' | 'pending' | 'overdue';
+  due_date: string;
+  amount: number;
+}
+
+interface PaymentSummary {
+  paidTill: string | null;       // latest consecutive paid month from check-in (yyyy-MM-dd)
+  hasOverdue: boolean;
+  pendingCount: number;
+  nextDue: string | null;        // ISO date
+}
 
 interface RoomBucket {
   roomId: string | null;
@@ -52,6 +84,7 @@ export function TenantsClient({ role }: { role: Role }) {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [buildings, setBuildings] = useState<Building[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [payments, setPayments] = useState<PaymentLite[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -63,10 +96,17 @@ export function TenantsClient({ role }: { role: Role }) {
   const [form, setForm] = useState<TenantForm>({});
   const [holdTenant, setHoldTenant] = useState<Tenant | null>(null);
   const [waTenant, setWaTenant] = useState<Tenant | null>(null);
+  const [overdueOpen, setOverdueOpen] = useState(false);
 
   async function load() {
     setLoading(true);
-    const [t, r, b, s] = await Promise.all([
+    // Twelve-month window for inline paid-till / overdue badges
+    const oldest = new Date();
+    oldest.setMonth(oldest.getMonth() - 11);
+    oldest.setDate(1);
+    const oldestISO = oldest.toISOString().slice(0, 10);
+
+    const [t, r, b, s, p] = await Promise.all([
       supabase
         .from('tenants')
         .select('*, room:rooms(*, building:buildings(*))')
@@ -77,6 +117,10 @@ export function TenantsClient({ role }: { role: Role }) {
         .order('room_number'),
       supabase.from('buildings').select('*').order('name'),
       supabase.from('settings').select('*').eq('id', 1).single(),
+      supabase
+        .from('payments')
+        .select('tenant_id, period_month, status, due_date, amount')
+        .gte('period_month', oldestISO),
     ]);
     if (t.error) toast.error(t.error.message);
     if (r.error) toast.error(r.error.message);
@@ -84,6 +128,7 @@ export function TenantsClient({ role }: { role: Role }) {
     setRooms((r.data as Room[]) ?? []);
     setBuildings((b.data as Building[]) ?? []);
     setSettings((s.data as Settings) ?? null);
+    setPayments((p.data as PaymentLite[]) ?? []);
     setLoading(false);
   }
   useEffect(() => {
@@ -177,6 +222,145 @@ export function TenantsClient({ role }: { role: Role }) {
       buildingSummary: parts.length ? parts.join(', ') : 'all rooms full',
     };
   }, [buildings, rooms, occByRoom]);
+
+  // Per-tenant payment summary (paid-till, overdue, next due) for inline pill
+  const paymentSummaryByTenant = useMemo(() => {
+    const today = new Date();
+    const byTenant = new Map<string, PaymentLite[]>();
+    for (const p of payments) {
+      if (!byTenant.has(p.tenant_id)) byTenant.set(p.tenant_id, []);
+      byTenant.get(p.tenant_id)!.push(p);
+    }
+    const out = new Map<string, PaymentSummary>();
+    for (const [tid, list] of byTenant) {
+      const sorted = [...list].sort((a, b) => a.period_month.localeCompare(b.period_month));
+      let paidTill: string | null = null;
+      for (const p of sorted) {
+        if (p.status === 'paid') paidTill = p.period_month;
+        else break;
+      }
+      const pending = sorted.filter((p) => p.status !== 'paid');
+      const next = pending[0];
+      // Missed = explicit 'overdue' OR pending with due_date already past
+      const isMissed =
+        !!next &&
+        (next.status === 'overdue' ||
+          (next.due_date ? new Date(next.due_date).getTime() < today.getTime() : false));
+      out.set(tid, {
+        paidTill,
+        hasOverdue: isMissed,
+        pendingCount: pending.length,
+        nextDue: next?.due_date ?? null,
+      });
+    }
+    return out;
+  }, [payments]);
+
+  // Flat list of tenants whose oldest unpaid period is overdue (red-dot).
+  // Powers the bulk "Notify overdue" WhatsApp dialog.
+  const overdueItems = useMemo<OverdueRow[]>(() => {
+    const now = new Date();
+    // Compare at end-of-today so a due_date == today is NOT yet treated as
+    // overdue (matches the rent-tracker's calendar-day semantics).
+    const endOfToday = new Date(
+      now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999,
+    ).getTime();
+    const byTenant = new Map<string, PaymentLite[]>();
+    for (const p of payments) {
+      if (!byTenant.has(p.tenant_id)) byTenant.set(p.tenant_id, []);
+      byTenant.get(p.tenant_id)!.push(p);
+    }
+    const rows: OverdueRow[] = [];
+    for (const t of tenants) {
+      if (t.status !== 'active') continue;
+      const list = (byTenant.get(t.id) ?? [])
+        .filter((p) => p.status !== 'paid')
+        .sort((a, b) => a.period_month.localeCompare(b.period_month));
+      const oldest = list[0];
+      if (!oldest) continue;
+      const due = oldest.due_date ? new Date(oldest.due_date).getTime() : null;
+      const isOverdue =
+        oldest.status === 'overdue' || (due !== null && due < endOfToday - 86_400_000);
+      if (!isOverdue) continue;
+      const daysLate = due
+        ? Math.max(0, Math.floor((endOfToday - due) / 86_400_000))
+        : 0;
+      rows.push({ tenant: t, payment: oldest, daysLate });
+    }
+    return rows.sort((a, b) => b.daysLate - a.daysLate);
+  }, [tenants, payments]);
+
+  // Per-tenant 12-month dot strip (same semantics as the rent tracker)
+  const dotsByTenant = useMemo(() => {
+    const today = new Date();
+    const currentMonthIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
+    const settingsDueDay = settings?.payment_due_day ?? 5;
+
+    const byTenant = new Map<string, PaymentLite[]>();
+    for (const p of payments) {
+      if (!byTenant.has(p.tenant_id)) byTenant.set(p.tenant_id, []);
+      byTenant.get(p.tenant_id)!.push(p);
+    }
+
+    const out = new Map<string, MonthDot[]>();
+    for (const t of tenants) {
+      const tPayments = byTenant.get(t.id) ?? [];
+      const checkIn = t.check_in_date ? new Date(t.check_in_date) : null;
+      const checkInMonthIso = checkIn
+        ? `${checkIn.getFullYear()}-${String(checkIn.getMonth() + 1).padStart(2, '0')}-01`
+        : null;
+      const dueDay = t.payment_due_day ?? (checkIn ? checkIn.getDate() : settingsDueDay);
+
+      const dots: MonthDot[] = MONTHS_WINDOW.map((monthIso) => {
+        if (checkInMonthIso && monthIso < checkInMonthIso) {
+          return { month: monthIso, status: 'before' };
+        }
+        const isFuture = monthIso > currentMonthIso;
+        const payment = tPayments.find((p) => p.period_month.slice(0, 10) === monthIso);
+
+        if (payment) {
+          if (payment.status === 'paid') {
+            return { month: monthIso, status: 'paid', dueDate: payment.due_date };
+          }
+          const due = payment.due_date ? new Date(payment.due_date) : null;
+          const daysToDue = due
+            ? Math.ceil((due.getTime() - today.getTime()) / 86_400_000)
+            : undefined;
+          const overdue =
+            payment.status === 'overdue' || (daysToDue !== undefined && daysToDue < 0);
+          return {
+            month: monthIso,
+            status: overdue
+              ? 'missed'
+              : daysToDue !== undefined && daysToDue <= DUE_SOON_DAYS
+                ? 'duesoon'
+                : 'upcoming',
+            dueDate: payment.due_date,
+            daysToDue,
+          };
+        }
+
+        if (isFuture) {
+          const [y, m] = monthIso.split('-').map(Number);
+          const lastDay = new Date(y, m, 0).getDate();
+          const due = new Date(y, m - 1, Math.min(dueDay, lastDay));
+          const daysToDue = Math.ceil((due.getTime() - today.getTime()) / 86_400_000);
+          return {
+            month: monthIso,
+            status: daysToDue <= DUE_SOON_DAYS ? 'duesoon' : 'upcoming',
+            dueDate: due.toISOString().slice(0, 10),
+            daysToDue,
+          };
+        }
+
+        // Past/current month without a record → assume paid
+        return { month: monthIso, status: 'paid' };
+      });
+
+      out.set(t.id, dots);
+    }
+    return out;
+  }, [tenants, payments, settings]);
 
   const filtered = useMemo(() => {
     return tenants.filter((t) => {
@@ -309,6 +493,32 @@ export function TenantsClient({ role }: { role: Role }) {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setOverdueOpen(true)}
+            disabled={overdueItems.length === 0}
+            className={
+              overdueItems.length > 0
+                ? 'border-red-600/40 text-red-700 hover:bg-red-50 hover:text-red-800'
+                : ''
+            }
+            title={
+              overdueItems.length === 0
+                ? 'No overdue tenants'
+                : `Open WhatsApp reminders for ${overdueItems.length} overdue tenant(s)`
+            }
+          >
+            <Send className="size-4 mr-1" />
+            Notify overdue
+            {overdueItems.length > 0 && (
+              <Badge
+                variant="destructive"
+                className="ml-1.5 h-5 px-1.5 text-[10px] animate-pulse"
+              >
+                {overdueItems.length}
+              </Badge>
+            )}
+          </Button>
           <Button variant="outline" onClick={exportCSV}>
             <Download className="size-4 mr-1" />
             Export CSV
@@ -531,6 +741,18 @@ export function TenantsClient({ role }: { role: Role }) {
           </div>
         </CardHeader>
         <CardContent className="overflow-x-auto">
+          {!loading && filtered.length > 0 && (
+            <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground mb-3 pb-2 border-b">
+              <span className="font-semibold uppercase tracking-wide text-[10px]">
+                {TRACKER_YEAR} rent:
+              </span>
+              <LegendChip status="paid"     label="Paid" />
+              <LegendChip status="duesoon"  label="Due soon" />
+              <LegendChip status="missed"   label="Missed" />
+              <LegendChip status="upcoming" label="Upcoming" />
+              <LegendChip status="before"   label="Before join" />
+            </div>
+          )}
           {viewMode === 'grouped' ? (
             <GroupedTenants
               groups={groupedView}
@@ -539,6 +761,8 @@ export function TenantsClient({ role }: { role: Role }) {
               onEdit={openEdit}
               onRemove={remove}
               onWa={setWaTenant}
+              paymentSummary={paymentSummaryByTenant}
+              dotsByTenant={dotsByTenant}
             />
           ) : (
             <Table>
@@ -548,6 +772,7 @@ export function TenantsClient({ role }: { role: Role }) {
                   <TableHead className="hidden md:table-cell">Building / Room</TableHead>
                   <TableHead className="hidden sm:table-cell">Phone</TableHead>
                   <TableHead className="hidden lg:table-cell">Check-in</TableHead>
+                  <TableHead>Payment</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -555,12 +780,12 @@ export function TenantsClient({ role }: { role: Role }) {
               <TableBody>
                 {loading && (
                   <TableRow>
-                    <TableCell colSpan={6}>Loading…</TableCell>
+                    <TableCell colSpan={7}>Loading…</TableCell>
                   </TableRow>
                 )}
                 {!loading && filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-muted-foreground">
+                    <TableCell colSpan={7} className="text-muted-foreground">
                       No tenants.
                     </TableCell>
                   </TableRow>
@@ -601,9 +826,30 @@ export function TenantsClient({ role }: { role: Role }) {
                       {formatDate(t.check_in_date)}
                     </TableCell>
                     <TableCell>
+                      <div className="flex flex-col gap-1.5">
+                        <MonthDotsStrip dots={dotsByTenant.get(t.id) ?? []} />
+                        <RentStatusPill
+                          summary={paymentSummaryByTenant.get(t.id)}
+                          checkInDate={t.check_in_date}
+                        />
+                      </div>
+                    </TableCell>
+                    <TableCell>
                       <Badge variant={t.status === 'active' ? 'default' : 'secondary'}>
                         {t.status}
                       </Badge>
+                      {t.payment_hold && (
+                        <Badge
+                          className="ml-1 text-[10px] bg-amber-600 text-white"
+                          title={
+                            t.payment_hold_until
+                              ? `On hold until ${t.payment_hold_until}${t.payment_hold_reason ? ` — ${t.payment_hold_reason}` : ''}`
+                              : `On hold${t.payment_hold_reason ? ` — ${t.payment_hold_reason}` : ''}`
+                          }
+                        >
+                          on hold
+                        </Badge>
+                      )}
                     </TableCell>
                     <TableCell className="text-right space-x-1">
                       {t.phone && (
@@ -649,6 +895,13 @@ export function TenantsClient({ role }: { role: Role }) {
           availability={availability}
         />
       )}
+
+      <OverdueWaDialog
+        open={overdueOpen}
+        onOpenChange={setOverdueOpen}
+        items={overdueItems}
+        settings={settings}
+      />
     </div>
   );
 }
@@ -658,7 +911,7 @@ export function TenantsClient({ role }: { role: Role }) {
 // =====================================================================
 
 function GroupedTenants({
-  groups, loading, canDelete, onEdit, onRemove, onWa,
+  groups, loading, canDelete, onEdit, onRemove, onWa, paymentSummary, dotsByTenant,
 }: {
   groups: BuildingBucket[];
   loading: boolean;
@@ -666,6 +919,8 @@ function GroupedTenants({
   onEdit: (t: Tenant) => void;
   onRemove: (id: string) => void;
   onWa: (t: Tenant) => void;
+  paymentSummary: Map<string, PaymentSummary>;
+  dotsByTenant: Map<string, MonthDot[]>;
 }) {
   if (loading) return <p className="text-sm text-muted-foreground py-4">Loading…</p>;
   if (groups.length === 0) {
@@ -740,11 +995,20 @@ function GroupedTenants({
                                     </Badge>
                                   )}
                                 </div>
-                                {t.phone && (
-                                  <div className="text-[11px] text-muted-foreground truncate">
-                                    {t.phone}
-                                  </div>
-                                )}
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  {t.phone && (
+                                    <span className="text-[11px] text-muted-foreground truncate">
+                                      {t.phone}
+                                    </span>
+                                  )}
+                                  <RentStatusPill
+                                    summary={paymentSummary.get(t.id)}
+                                    checkInDate={t.check_in_date}
+                                  />
+                                </div>
+                                <div className="mt-1">
+                                  <MonthDotsStrip dots={dotsByTenant.get(t.id) ?? []} />
+                                </div>
                               </div>
                             </div>
                             <div className="flex items-center shrink-0">
@@ -793,3 +1057,242 @@ function GroupedTenants({
   );
 }
 
+function RentStatusPill({
+  summary, checkInDate,
+}: { summary?: PaymentSummary; checkInDate?: string | null }) {
+  const now = new Date();
+  const assumedPaidTill =
+    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+
+  // Next-due date derived from the tenant's check-in day-of-month.
+  // If the day-of-month has already passed in the current month, roll forward.
+  function nextDueFromCheckIn(): { iso: string; days: number } | null {
+    if (!checkInDate) return null;
+    const ci = new Date(checkInDate);
+    if (isNaN(ci.getTime())) return null;
+    const day = ci.getDate();
+    let y = now.getFullYear();
+    let m = now.getMonth();
+    const lastDayCur = new Date(y, m + 1, 0).getDate();
+    let candidate = new Date(y, m, Math.min(day, lastDayCur));
+    if (candidate.getTime() < now.getTime() - 1000 * 60 * 60 * 12) {
+      m += 1;
+      if (m > 11) { m = 0; y += 1; }
+      const lastDayNext = new Date(y, m + 1, 0).getDate();
+      candidate = new Date(y, m, Math.min(day, lastDayNext));
+    }
+    return {
+      iso: candidate.toISOString().slice(0, 10),
+      days: Math.ceil((candidate.getTime() - now.getTime()) / 86_400_000),
+    };
+  }
+
+  // ---- Real overdue row → red MISSED pill ----------------------------------
+  if (summary?.hasOverdue) {
+    return (
+      <PillBadge
+        status="missed"
+        title={`Next due: ${summary.nextDue ?? '—'}`}
+        text={`MISSED · paid till ${summary.paidTill ? formatMonth(summary.paidTill) : '—'}`}
+      />
+    );
+  }
+
+  // ---- Real pending row → amber if due ≤15d else sky upcoming --------------
+  if (summary && summary.pendingCount > 0) {
+    const dueIso = summary.nextDue;
+    const days = dueIso
+      ? Math.ceil((new Date(dueIso).getTime() - now.getTime()) / 86_400_000)
+      : null;
+    const dateLbl = dueIso
+      ? new Date(dueIso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+      : '—';
+    if (days !== null && days <= 15) {
+      return (
+        <PillBadge
+          status="duesoon"
+          title={`Next due: ${dueIso} (in ${days}d)`}
+          text={`Paid till ${formatMonth(summary.paidTill ?? assumedPaidTill)} · due ${dateLbl} (in ${days}d)`}
+        />
+      );
+    }
+    return (
+      <PillBadge
+        status="upcoming"
+        title={`Next due: ${dueIso}`}
+        text={`Paid till ${formatMonth(summary.paidTill ?? assumedPaidTill)} · next due ${dateLbl}`}
+      />
+    );
+  }
+
+  // ---- No pending row: assumed paid till current month, derive next due ----
+  const paidTill = summary?.paidTill ?? assumedPaidTill;
+  const nd = nextDueFromCheckIn();
+  if (!nd) {
+    return (
+      <PillBadge
+        status="paid"
+        title={`Paid till ${formatMonth(paidTill)}`}
+        text={`Paid till ${formatMonth(paidTill)}`}
+      />
+    );
+  }
+  const dateLbl = new Date(nd.iso).toLocaleDateString('en-GB', {
+    day: 'numeric', month: 'short',
+  });
+  if (nd.days <= 15) {
+    return (
+      <PillBadge
+        status="duesoon"
+        title={`Joined ${checkInDate}. Next due ${nd.iso} (in ${nd.days}d).`}
+        text={`Paid till ${formatMonth(paidTill)} · due ${dateLbl} (in ${nd.days}d)`}
+      />
+    );
+  }
+  return (
+    <PillBadge
+      status="upcoming"
+      title={`Joined ${checkInDate}. Next due ${nd.iso}.`}
+      text={`Paid till ${formatMonth(paidTill)} · next due ${dateLbl}`}
+    />
+  );
+}
+
+/** Coloured pill with a circular tick/cross/dash matching the DotsStrip palette. */
+function PillBadge({
+  status, text, title,
+}: { status: DotStatus; text: string; title?: string }) {
+  const s = DOT_STYLES[status];
+  const icon =
+    status === 'paid' ? (
+      <Check size={9} strokeWidth={4} />
+    ) : status === 'missed' ? (
+      <X size={9} strokeWidth={4} />
+    ) : (
+      <Minus size={9} strokeWidth={4} />
+    );
+  return (
+    <span
+      title={title}
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium whitespace-nowrap ${
+        status === 'missed' ? 'animate-pulse' : ''
+      }`}
+      style={{
+        backgroundColor: s.bg,
+        color: s.fg,
+        boxShadow: `inset 0 0 0 1px ${s.ring}`,
+      }}
+    >
+      <span
+        className="inline-flex items-center justify-center rounded-full"
+        style={{
+          width: 12,
+          height: 12,
+          backgroundColor: '#ffffff',
+          color: s.bg,
+        }}
+      >
+        {icon}
+      </span>
+      {text}
+    </span>
+  );
+}
+
+/**
+ * Compact 12-month rent calendar shown inline on the tenants screen.
+ * Uses inline styles for the colors so it renders identically regardless of
+ * Tailwind JIT/purge behaviour. Each cell = month letter on top, a filled
+ * coloured circle with a check / cross / dash icon below.
+ */
+const DOT_STYLES: Record<
+  DotStatus,
+  { bg: string; ring: string; fg: string; label: string }
+> = {
+  paid:     { bg: '#047857', ring: '#064e3b', fg: '#ffffff', label: 'Paid'      }, // emerald-700/900
+  missed:   { bg: '#b91c1c', ring: '#7f1d1d', fg: '#ffffff', label: 'Missed'    }, // red-700/900
+  duesoon:  { bg: '#f59e0b', ring: '#92400e', fg: '#ffffff', label: 'Due soon'  }, // amber-500/800
+  upcoming: { bg: '#0ea5e9', ring: '#075985', fg: '#ffffff', label: 'Upcoming'  }, // sky-500/800
+  before:   { bg: '#e2e8f0', ring: '#94a3b8', fg: '#64748b', label: 'Before join' }, // slate
+};
+
+function MonthDotsStrip({ dots }: { dots: MonthDot[] }) {
+  if (dots.length === 0) return null;
+  return (
+    <div className="inline-flex items-end gap-1">
+      {dots.map((d, i) => {
+        const monthLabel = `${MONTH_LETTERS[i]} ${TRACKER_YEAR}`;
+        const s = DOT_STYLES[d.status];
+
+        let title = `${monthLabel}: ${s.label}`;
+        if (d.status === 'missed') title = `${monthLabel}: missed (due ${d.dueDate ?? '—'})`;
+        else if (d.status === 'duesoon')
+          title = `${monthLabel}: due ${d.dueDate ?? '—'}${
+            d.daysToDue !== undefined ? ` (in ${d.daysToDue}d)` : ''
+          }`;
+        else if (d.status === 'upcoming')
+          title = `${monthLabel}: upcoming${d.dueDate ? ` (due ${d.dueDate})` : ''}`;
+
+        const iconNode =
+          d.status === 'paid' ? (
+            <Check size={12} strokeWidth={4} />
+          ) : d.status === 'missed' ? (
+            <X size={12} strokeWidth={4} />
+          ) : (
+            <Minus size={12} strokeWidth={4} />
+          );
+
+        return (
+          <div key={d.month} className="flex flex-col items-center" title={title}>
+            <span className="text-[10px] leading-none text-muted-foreground font-semibold">
+              {MONTH_LETTERS[i]}
+            </span>
+            <span
+              className={`mt-1 inline-flex items-center justify-center rounded-full ${
+                d.status === 'missed' ? 'animate-pulse' : ''
+              }`}
+              style={{
+                width: 20,
+                height: 20,
+                backgroundColor: s.bg,
+                boxShadow: `0 0 0 2px ${s.ring}`,
+                color: s.fg,
+              }}
+            >
+              {iconNode}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function LegendChip({
+  status, label,
+}: { status: DotStatus; label: string }) {
+  const s = DOT_STYLES[status];
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span
+        className="inline-flex items-center justify-center rounded-full"
+        style={{
+          width: 14,
+          height: 14,
+          backgroundColor: s.bg,
+          boxShadow: `0 0 0 2px ${s.ring}`,
+          color: s.fg,
+        }}
+      >
+        {status === 'paid' ? (
+          <Check size={9} strokeWidth={4} />
+        ) : status === 'missed' ? (
+          <X size={9} strokeWidth={4} />
+        ) : (
+          <Minus size={9} strokeWidth={4} />
+        )}
+      </span>
+      <span>{label}</span>
+    </span>
+  );
+}
