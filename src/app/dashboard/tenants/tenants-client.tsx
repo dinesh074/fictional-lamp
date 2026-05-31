@@ -233,30 +233,7 @@ export function TenantsClient({ role }: { role: Role }) {
     }
     const out = new Map<string, PaymentSummary>();
     for (const [tid, list] of byTenant) {
-      // Step 1 — dedupe by period_month, preferring a 'paid' row when
-      // duplicates exist (otherwise a stale pending row hides a newer paid
-      // receipt and the pill keeps shouting "MISSED" forever).
-      const byMonth = new Map<string, PaymentLite>();
-      for (const p of list) {
-        const key = p.period_month.slice(0, 10);
-        const prev = byMonth.get(key);
-        if (!prev) byMonth.set(key, p);
-        else if (prev.status !== 'paid' && p.status === 'paid') byMonth.set(key, p);
-      }
-      const sorted = Array.from(byMonth.values()).sort((a, b) =>
-        a.period_month.localeCompare(b.period_month),
-      );
-
-      // Step 2 — implicit reconciliation: if a later month is paid, any
-      // earlier non-paid rows are stale (no landlord accepts June rent while
-      // May is unpaid). Treat them as paid for summary purposes.
-      let lastPaidIdx = -1;
-      for (let i = sorted.length - 1; i >= 0; i--) {
-        if (sorted[i].status === 'paid') { lastPaidIdx = i; break; }
-      }
-      const reconciled = sorted.map((p, i) =>
-        i < lastPaidIdx && p.status !== 'paid' ? { ...p, status: 'paid' as const } : p,
-      );
+      const sorted = [...list].sort((a, b) => a.period_month.localeCompare(b.period_month));
       let paidTill: string | null = null;
       for (const p of sorted) {
         if (p.status === 'paid') paidTill = p.period_month;
@@ -296,8 +273,9 @@ export function TenantsClient({ role }: { role: Role }) {
     const rows: OverdueRow[] = [];
     for (const t of tenants) {
       if (t.status !== 'active') continue;
-      // Dedupe by period_month, prefer paid, then ignore any non-paid row
-      // that precedes a later-paid one (stale data after partial fixes).
+      const list = (byTenant.get(t.id) ?? [])
+        .filter((p) => p.status !== 'paid')
+        .sort((a, b) => a.period_month.localeCompare(b.period_month));
       const oldest = list[0];
       if (!oldest) continue;
       const due = oldest.due_date ? new Date(oldest.due_date).getTime() : null;
@@ -338,12 +316,7 @@ export function TenantsClient({ role }: { role: Role }) {
           return { month: monthIso, status: 'before' };
         }
         const isFuture = monthIso > currentMonthIso;
-        // Prefer paid row when duplicates exist for this month.
-        const monthRows = tPayments.filter(
-          (p) => p.period_month.slice(0, 10) === monthIso,
-        );
-        const payment =
-          monthRows.find((p) => p.status === 'paid') ?? monthRows[0];
+        const payment = tPayments.find((p) => p.period_month.slice(0, 10) === monthIso);
 
         if (payment) {
           if (payment.status === 'paid') {
@@ -383,25 +356,6 @@ export function TenantsClient({ role }: { role: Role }) {
         // Past/current month without a record → assume paid
         return { month: monthIso, status: 'paid' };
       });
-
-      // If any later month has a REAL paid row, treat earlier missed/upcoming/
-      // duesoon dots as paid too — landlords don't accept Jun rent while May
-      // is unpaid, so a leftover pending row is almost certainly stale.
-      let lastRealPaidIdx = -1;
-      for (let i = dots.length - 1; i >= 0; i--) {
-        const real = tPayments.some(
-          (p) => p.period_month.slice(0, 10) === dots[i].month && p.status === 'paid',
-        );
-        if (real) { lastRealPaidIdx = i; break; }
-      }
-      if (lastRealPaidIdx > 0) {
-        for (let i = 0; i < lastRealPaidIdx; i++) {
-          const s = dots[i].status;
-          if (s === 'missed' || s === 'upcoming' || s === 'duesoon') {
-            dots[i] = { month: dots[i].month, status: 'paid' };
-          }
-        }
-      }
 
       out.set(t.id, dots);
     }

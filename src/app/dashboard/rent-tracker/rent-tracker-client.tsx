@@ -492,10 +492,11 @@ export function RentTrackerClient({ role: _role }: { role: Role }) {
               {/* Legend + month header (so dots align with months) */}
               <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground mb-3">
                 <Legend className="bg-emerald-700 ring-2 ring-emerald-900 text-white" label="Paid" icon={<Check className="size-3" strokeWidth={4} />} />
-                <Legend className="bg-amber-500 ring-2 ring-amber-800 text-white" label="Due soon" icon={<Minus className="size-3" strokeWidth={4} />} />
+                <Legend className="bg-emerald-400 ring-2 ring-emerald-600 text-white" label="Paid (assumed)" icon={<Check className="size-3" strokeWidth={3} />} />
+                <Legend className="bg-amber-500 ring-2 ring-amber-800 text-white" label="Due soon" icon={<CalendarClock className="size-3" strokeWidth={3} />} />
                 <Legend className="bg-red-700 ring-2 ring-red-900 text-white" label="Missed" icon={<X className="size-3" strokeWidth={4} />} />
-                <Legend className="bg-sky-500 ring-2 ring-sky-800 text-white" label="Upcoming" icon={<Minus className="size-3" strokeWidth={4} />} />
-                <Legend className="bg-slate-200 ring-2 ring-slate-400 text-slate-500" label="Before join" icon={<Minus className="size-3" />} />
+                <Legend className="bg-white ring-2 ring-slate-400 text-slate-500" label="Upcoming" icon={<span className="size-1.5 rounded-full bg-slate-400" />} />
+                <Legend className="bg-slate-100 ring-2 ring-slate-300 text-slate-400" label="Before join" icon={<Minus className="size-3" />} />
               </div>
 
               <div className="overflow-x-auto">
@@ -631,33 +632,35 @@ function DotIcon({ dot }: { dot: Dot }) {
 
   // Inline-style palette so colours always render, independent of Tailwind JIT scanning.
   const PAL = {
-    paid:     { bg: '#047857', ring: '#064e3b', fg: '#ffffff' },
-    missed:   { bg: '#b91c1c', ring: '#7f1d1d', fg: '#ffffff' },
-    duesoon:  { bg: '#f59e0b', ring: '#92400e', fg: '#ffffff' },
-    upcoming: { bg: '#0ea5e9', ring: '#075985', fg: '#ffffff' },
-    before:   { bg: '#e2e8f0', ring: '#94a3b8', fg: '#64748b' },
+    paid:        { bg: '#047857', ring: '#064e3b', fg: '#ffffff' },
+    paidAssumed: { bg: '#34d399', ring: '#059669', fg: '#ffffff' }, // lighter green – auto-assumed
+    missed:      { bg: '#b91c1c', ring: '#7f1d1d', fg: '#ffffff' },
+    duesoon:     { bg: '#f59e0b', ring: '#92400e', fg: '#ffffff' },
+    upcoming:    { bg: '#ffffff', ring: '#94a3b8', fg: '#64748b' }, // hollow – low emphasis
+    before:      { bg: '#f1f5f9', ring: '#cbd5e1', fg: '#94a3b8' },
   } as const;
 
-  const dotStyle = (p: { bg: string; ring: string; fg: string }) => ({
-    width: 24,
-    height: 24,
+  const dotStyle = (p: { bg: string; ring: string; fg: string }, size = 24) => ({
+    width: size,
+    height: size,
     backgroundColor: p.bg,
     boxShadow: `0 0 0 2px ${p.ring}`,
     color: p.fg,
   });
 
   if (dot.status === 'paid') {
+    const real = !dot.assumed;
     return (
       <span
         title={
-          dot.assumed
-            ? `${monthLbl}: paid (assumed)`
-            : `${monthLbl}: paid${dot.paidDate ? ` on ${dot.paidDate}` : ''}`
+          real
+            ? `${monthLbl}: paid${dot.paidDate ? ` on ${dot.paidDate}` : ''}`
+            : `${monthLbl}: paid (assumed — no record yet, no unpaid row either)`
         }
         className="inline-flex shrink-0 items-center justify-center rounded-full"
-        style={dotStyle(PAL.paid)}
+        style={dotStyle(real ? PAL.paid : PAL.paidAssumed)}
       >
-        <Check size={14} strokeWidth={4} />
+        <Check size={14} strokeWidth={real ? 4 : 3} />
       </span>
     );
   }
@@ -678,13 +681,29 @@ function DotIcon({ dot }: { dot: Dot }) {
     const tip = `${monthLbl}: due ${dot.dueDate ?? '—'}${
       dot.daysToDue !== undefined ? ` (in ${days}d)` : ''
     }`;
+    // Imminent (≤15d) → solid amber w/ clock for clear "action coming"
+    if (dueSoon) {
+      return (
+        <span
+          title={tip}
+          className="inline-flex shrink-0 items-center justify-center rounded-full"
+          style={dotStyle(PAL.duesoon)}
+        >
+          <CalendarClock size={13} strokeWidth={3} />
+        </span>
+      );
+    }
+    // Far-future → hollow ring, de-emphasized so the eye is drawn to "now"
     return (
       <span
         title={tip}
         className="inline-flex shrink-0 items-center justify-center rounded-full"
-        style={dotStyle(dueSoon ? PAL.duesoon : PAL.upcoming)}
+        style={dotStyle(PAL.upcoming)}
       >
-        <Minus size={14} strokeWidth={4} />
+        <span
+          className="rounded-full"
+          style={{ width: 6, height: 6, backgroundColor: PAL.upcoming.ring }}
+        />
       </span>
     );
   }
@@ -693,9 +712,9 @@ function DotIcon({ dot }: { dot: Dot }) {
       <span
         title={`${monthLbl}: before check-in`}
         className="inline-flex shrink-0 items-center justify-center rounded-full"
-        style={dotStyle(PAL.before)}
+        style={dotStyle(PAL.before, 20)}
       >
-        <Minus size={12} strokeWidth={3} />
+        <Minus size={10} strokeWidth={2} />
       </span>
     );
   }
@@ -704,9 +723,9 @@ function DotIcon({ dot }: { dot: Dot }) {
     <span
       title={monthLbl}
       className="inline-flex shrink-0 items-center justify-center rounded-full"
-      style={dotStyle(PAL.before)}
+      style={dotStyle(PAL.before, 20)}
     >
-      <Minus size={12} />
+      <Minus size={10} />
     </span>
   );
 }
