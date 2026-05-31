@@ -51,3 +51,6 @@ _git_out.txt
 .idea/
 *.iml
 .vscode/
+_*.txt
+_b.txt
+

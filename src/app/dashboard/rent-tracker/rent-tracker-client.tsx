@@ -136,9 +136,15 @@ export function RentTrackerClient({ role: _role }: { role: Role }) {
           return { month: monthIso, status: 'before' };
         }
         const isFuture = monthDate.getTime() > currentMonth.getTime();
-        const payment = tPayments.find(
+        // Prefer a paid row when duplicates exist for the same tenant+month.
+        // Otherwise a stale 'pending' row from before the payments-page
+        // upsert fix could shadow a freshly-recorded 'paid' row and leave
+        // the tracker cell red / the "Paid till" line stuck on an old month.
+        const monthRows = tPayments.filter(
           (p) => p.period_month.slice(0, 10) === monthIso,
         );
+        const payment =
+          monthRows.find((p) => p.status === 'paid') ?? monthRows[0];
 
         if (payment) {
           if (payment.status === 'paid') {
