@@ -76,19 +76,35 @@ export function PaymentsClient({ role }: { role: Role }) {
   }
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [from, to]);
 
+  /**
+   * Build a `yyyy-MM-dd` due date by taking the day-of-month from the tenant
+   * (falling back to the global setting) and clamping to the last day of the
+   * chosen period month — e.g. due-day 30 in February becomes Feb 28/29.
+   */
+  function deriveDueDate(tenant: Tenant | undefined, periodISO: string): string {
+    const [yStr, mStr] = periodISO.split('-');
+    const y = Number(yStr);
+    const m = Number(mStr) - 1; // 0-based
+    const settingsDueDay = settings?.payment_due_day ?? 5;
+    const tenantDueDay = tenant?.payment_due_day ?? settingsDueDay;
+    const lastDay = new Date(y, m + 1, 0).getDate();
+    const day = Math.min(tenantDueDay, lastDay);
+    return toISODate(new Date(y, m, day));
+  }
+
   function openNew() {
     const today = new Date();
     const month = startOfMonth(today);
-    const dueDay = settings?.payment_due_day ?? 5;
-    const due = new Date(today.getFullYear(), today.getMonth(), dueDay);
+    const periodISO = toISODate(month);
+    const t0 = tenants[0];
     // Default to "paid today" — this dialog is overwhelmingly used to LOG a
     // receipt, not to schedule a future invoice. Defaulting to 'pending' was
     // turning rent-tracker cells red after an entry (regression #UX-payments).
     setForm({
-      tenant_id: tenants[0]?.id ?? '',
-      amount: Number(tenants[0]?.room?.monthly_rent ?? 0),
-      period_month: toISODate(month),
-      due_date: toISODate(due),
+      tenant_id: t0?.id ?? '',
+      amount: Number(t0?.room?.monthly_rent ?? 0),
+      period_month: periodISO,
+      due_date: deriveDueDate(t0, periodISO),
       paid_date: toISODate(today),
       payment_mode: 'upi',
       status: 'paid',
@@ -99,7 +115,24 @@ export function PaymentsClient({ role }: { role: Role }) {
 
   function onTenantChange(id: string) {
     const t = tenants.find((x) => x.id === id);
-    setForm((f) => ({ ...f, tenant_id: id, amount: Number(t?.room?.monthly_rent ?? f.amount) }));
+    setForm((f) => ({
+      ...f,
+      tenant_id: id,
+      amount: Number(t?.room?.monthly_rent ?? f.amount),
+      // Re-derive due date from the newly-selected tenant's own due-day so
+      // the form can't be saved with a mismatched (period vs. due) pair.
+      due_date: deriveDueDate(t, f.period_month),
+    }));
+  }
+
+  function onPeriodChange(yyyymm: string) {
+    const periodISO = `${yyyymm}-01`;
+    const t = tenants.find((x) => x.id === form.tenant_id);
+    setForm((f) => ({
+      ...f,
+      period_month: periodISO,
+      due_date: deriveDueDate(t, periodISO),
+    }));
   }
 
   async function save(e: React.FormEvent) {
@@ -248,7 +281,7 @@ export function PaymentsClient({ role }: { role: Role }) {
                 <div className="space-y-2">
                   <Label>Period (month)</Label>
                   <Input type="month" required value={form.period_month.slice(0, 7)}
-                    onChange={(e) => setForm((f) => ({ ...f, period_month: `${e.target.value}-01` }))} />
+                    onChange={(e) => onPeriodChange(e.target.value)} />
                 </div>
                 <div className="space-y-2">
                   <Label>Due date</Label>

@@ -188,6 +188,27 @@ export function RentTrackerClient({ role: _role }: { role: Role }) {
         return { month: monthIso, status: 'paid', assumed: true };
       });
 
+      // Implicit reconciliation: if a LATER month is marked paid, any earlier
+      // unpaid dots are almost certainly stale 'pending' rows (no landlord
+      // accepts June rent while May is unpaid). Promote them to paid-assumed
+      // so the "Paid till" line + dot strip reflect ground truth instead of
+      // leftover data from before the upsert/auto-due-day fixes landed.
+      let lastPaidIdx = -1;
+      for (let i = dots.length - 1; i >= 0; i--) {
+        if (dots[i].status === 'paid' && !dots[i].assumed) {
+          lastPaidIdx = i;
+          break;
+        }
+      }
+      if (lastPaidIdx > 0) {
+        for (let i = 0; i < lastPaidIdx; i++) {
+          const d = dots[i];
+          if (d.status === 'missed' || d.status === 'upcoming') {
+            dots[i] = { month: d.month, status: 'paid', assumed: true };
+          }
+        }
+      }
+
       // Paid till = latest contiguous 'paid' from check-in onward
       let paidTill: string | null = null;
       for (const d of dots) {
@@ -697,7 +718,13 @@ function NextDueText({
     return <Badge className="ml-1 text-[10px] bg-emerald-600 ring-2 ring-emerald-900/40">All clear</Badge>;
   }
   const days = next.daysToDue;
-  const dateLbl = next.date ? format(parseISO(next.date), 'd MMM') : formatMonth(next.month);
+  // Always show the billing-period month — otherwise "Paid till May · due 30
+  // May" looks self-contradictory when the May-30 due actually belongs to the
+  // *June* billing period (common when due-day is end-of-month).
+  const periodLbl = format(parseISO(next.month), 'MMM yyyy');
+  const dateLbl = next.date
+    ? `${format(parseISO(next.date), 'd MMM')} · ${periodLbl}`
+    : periodLbl;
 
   if (hasMissed) {
     return <span className="font-medium text-red-600">due {dateLbl} (missed)</span>;
