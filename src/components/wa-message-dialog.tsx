@@ -12,15 +12,16 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import {
-  buildTenantVars, renderCustomTemplate, waMeUrl,
+  buildTenantVars, renderCustomTemplate, waMeUrl, openWhatsAppWithMaybeImage,
 } from '@/lib/wa';
+import { photoPublicUrl } from '@/lib/format';
 import type { Settings, Tenant, WaTemplate } from '@/lib/types';
 
 export interface WaMessageDialogProps {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   tenant: Pick<Tenant, 'id' | 'name' | 'phone' | 'room'>;
-  settings: Pick<Settings, 'hostel_name' | 'hostel_phone' | 'upi_vpa'> | null;
+  settings: Pick<Settings, 'hostel_name' | 'hostel_phone' | 'upi_vpa' | 'upi_qr_url'> | null;
   /** Pre-select a template key (e.g. 'payment_due') */
   defaultTemplateKey?: string;
   /** Optional context such as a pending payment */
@@ -105,9 +106,10 @@ export function WaMessageDialog({
   }, [selected, baseVars, extraVars]);
 
   const url = waMeUrl(tenant.phone, message);
+  const qrUrl = photoPublicUrl(settings?.upi_qr_url, 'upi-qr');
 
   async function send() {
-    if (!url) { toast.error('Tenant has no valid phone number.'); return; }
+    if (!tenant.phone) { toast.error('Tenant has no valid phone number.'); return; }
     // Log the outbound message (best-effort).
     await supabase.from('notifications_log').insert({
       tenant_id: tenant.id,
@@ -116,7 +118,12 @@ export function WaMessageDialog({
       message,
       status: 'clicked',
     });
-    window.open(url, '_blank', 'noopener,noreferrer');
+    await openWhatsAppWithMaybeImage({
+      phone: tenant.phone,
+      message,
+      imageUrl: qrUrl,
+      imageFilename: 'upi-qr.png',
+    });
     onOpenChange(false);
   }
 

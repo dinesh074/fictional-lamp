@@ -12,8 +12,8 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Send, MessageCircle, ExternalLink } from 'lucide-react';
-import { formatINR, formatMonth } from '@/lib/format';
-import { renderTemplate, waMeUrl } from '@/lib/wa';
+import { formatINR, formatMonth, photoPublicUrl } from '@/lib/format';
+import { renderTemplate, waMeUrl, openWhatsAppWithMaybeImage } from '@/lib/wa';
 import { upiLink } from '@/lib/upi';
 import type { Settings, Tenant } from '@/lib/types';
 
@@ -96,6 +96,8 @@ export function OverdueWaDialog({
     0,
   );
 
+  const qrUrl = photoPublicUrl(settings?.upi_qr_url, 'upi-qr');
+
   function buildMessageFor(row: OverdueRow): { url: string; message: string } | null {
     const link = upiLink({
       pa: settings?.upi_vpa ?? '',
@@ -118,38 +120,50 @@ export function OverdueWaDialog({
     return url ? { url, message } : null;
   }
 
-  function openOne(row: OverdueRow) {
+  async function openOne(row: OverdueRow) {
     const built = buildMessageFor(row);
     if (!built) {
       toast.error(`${row.tenant.name}: no phone on file`);
       return;
     }
-    window.open(built.url, '_blank', 'noopener');
+    await openWhatsAppWithMaybeImage({
+      phone: row.tenant.phone,
+      message: built.message,
+      imageUrl: qrUrl,
+      imageFilename: 'upi-qr.png',
+    });
     setSent((s) => new Set(s).add(row.tenant.id));
   }
 
-  function openAll() {
+  async function openAll() {
     if (withPhone.length === 0) return toast.error('No tenants with a phone to notify');
     if (
       withPhone.length > 5 &&
       !confirm(
-        `This will open ${withPhone.length} WhatsApp tabs back-to-back. ` +
-          `Your browser may ask to allow pop-ups. Continue?`,
+        `This will open ${withPhone.length} WhatsApp share sheets one after another. Continue?`,
       )
     )
       return;
 
     let opened = 0;
-    withPhone.forEach((row, i) => {
+    // Sequential — the Web Share API only allows one share sheet at a time.
+    for (const row of withPhone) {
       const built = buildMessageFor(row);
-      if (!built) return;
-      setTimeout(() => {
-        window.open(built.url, '_blank', 'noopener');
+      if (!built) continue;
+      try {
+        await openWhatsAppWithMaybeImage({
+          phone: row.tenant.phone,
+          message: built.message,
+          imageUrl: qrUrl,
+          imageFilename: 'upi-qr.png',
+        });
         setSent((s) => new Set(s).add(row.tenant.id));
-      }, i * 250);
-      opened += 1;
-    });
-    toast.success(`Queued ${opened} WhatsApp reminder${opened === 1 ? '' : 's'}`);
+        opened += 1;
+      } catch {
+        // user cancelled this share — keep going with the rest
+      }
+    }
+    toast.success(`Opened ${opened} WhatsApp reminder${opened === 1 ? '' : 's'}`);
   }
 
   return (

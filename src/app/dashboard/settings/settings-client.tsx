@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { KeyRound, Save, Building2, IndianRupee, MessageCircle, Plus, Trash2, RotateCcw } from 'lucide-react';
 import type { Settings, WaTemplate, WaTemplateCategory } from '@/lib/types';
+import { ImageUpload } from '@/components/image-upload';
 
 export function SettingsClient({ initial }: { initial: Settings }) {
   const supabase = createClient();
@@ -38,6 +39,7 @@ export function SettingsClient({ initial }: { initial: Settings }) {
         invoice_prefix: s.invoice_prefix,
         upi_vpa: s.upi_vpa ?? null,
         upi_payee_name: s.upi_payee_name ?? null,
+        upi_qr_url: s.upi_qr_url ?? null,
       })
       .eq('id', 1);
     setSaving(false);
@@ -159,6 +161,21 @@ export function SettingsClient({ initial }: { initial: Settings }) {
             </div>
 
             <div className="col-span-2">
+              <ImageUpload
+                bucket="upi-qr"
+                value={s.upi_qr_url ?? null}
+                onChange={(path) => up('upi_qr_url', path)}
+                label="UPI QR code (sent with WhatsApp payment reminders)"
+                maxKB={120}
+              />
+              <p className="text-[11px] text-muted-foreground mt-1">
+                On a phone, the reminder will open WhatsApp's share sheet with
+                the message AND this QR image attached. On desktop browsers we
+                fall back to a downloadable copy + the URL in the message.
+              </p>
+            </div>
+
+            <div className="col-span-2">
               <Button type="submit" disabled={saving}>
                 <Save className="size-4 mr-1" />
                 {saving ? 'Saving…' : 'Save settings'}
@@ -227,6 +244,7 @@ const PLACEHOLDER_HELP: { token: string; desc: string }[] = [
   { token: '{{contact_line}}', desc: '" Contact: <phone>." or empty' },
   { token: '{{upi_line}}', desc: 'UPI pay line (auto-filled if available)' },
   { token: '{{upi_vpa}}', desc: 'UPI ID alone' },
+  { token: '{{upi_qr_url}}', desc: 'Public URL of the uploaded QR image' },
   { token: '{{room}}', desc: 'Tenant room number' },
   { token: '{{building}}', desc: 'Tenant building name' },
   { token: '{{amount}}', desc: 'Payment amount (₹)' },

@@ -116,6 +116,8 @@ export interface Settings {
   invoice_counter: number;
   upi_vpa?: string | null;
   upi_payee_name?: string | null;
+  /** Storage path (inside the `upi-qr` public bucket) for the QR image. */
+  upi_qr_url?: string | null;
 }
 
 export interface LedgerEntry {
