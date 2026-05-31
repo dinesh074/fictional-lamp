@@ -37,11 +37,11 @@ export interface ReminderContext {
 export function renderTemplate(tpl: ReminderTemplate, ctx: ReminderContext): string {
   const hostel = ctx.settings?.hostel_name ?? 'Your PG';
   const contact = ctx.settings?.hostel_phone ? ` Contact: ${ctx.settings.hostel_phone}.` : '';
-  // Prefer plain-text UPI ID over a pre-filled-amount deep link — the latter
-  // is capped at ₹2k/day to new payees by NPCI. The tenant pastes the VPA in
-  // their UPI app (or taps the optional link, which opens with blank amount).
+  // Plain-text UPI ID only. A pre-filled-amount deep link is capped at
+  // ₹2k/day to new payees by NPCI, and a blank-amount link just adds noise —
+  // tenants paste / type the VPA into their UPI app directly.
   const upi = ctx.settings?.upi_vpa
-    ? `\nUPI ID: ${ctx.settings.upi_vpa}${hostel ? ` (${hostel})` : ''}${ctx.upiLink ? `\nTap to open: ${ctx.upiLink}` : ''}`
+    ? `\nUPI ID: ${ctx.settings.upi_vpa}${hostel ? ` (${hostel})` : ''}`
     : '';
   const name = ctx.tenant.name;
 
@@ -112,9 +112,9 @@ export function buildTenantVars(opts: {
 }): Partial<TenantWaVars> {
   const hostel = opts.settings?.hostel_name ?? 'Your PG';
   const phone = opts.settings?.hostel_phone ?? '';
-  // See renderTemplate(): plain UPI ID is primary, tap-link is secondary.
+  // See renderTemplate(): plain UPI ID only, no deep link.
   const upi = opts.settings?.upi_vpa
-    ? `\nUPI ID: ${opts.settings.upi_vpa}${hostel ? ` (${hostel})` : ''}${opts.upiLink ? `\nTap to open: ${opts.upiLink}` : ''}`
+    ? `\nUPI ID: ${opts.settings.upi_vpa}${hostel ? ` (${hostel})` : ''}`
     : '';
   return {
     tenant_name: opts.tenant.name,
