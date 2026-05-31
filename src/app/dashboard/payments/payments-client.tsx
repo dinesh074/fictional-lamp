@@ -81,14 +81,17 @@ export function PaymentsClient({ role }: { role: Role }) {
     const month = startOfMonth(today);
     const dueDay = settings?.payment_due_day ?? 5;
     const due = new Date(today.getFullYear(), today.getMonth(), dueDay);
+    // Default to "paid today" — this dialog is overwhelmingly used to LOG a
+    // receipt, not to schedule a future invoice. Defaulting to 'pending' was
+    // turning rent-tracker cells red after an entry (regression #UX-payments).
     setForm({
       tenant_id: tenants[0]?.id ?? '',
       amount: Number(tenants[0]?.room?.monthly_rent ?? 0),
       period_month: toISODate(month),
       due_date: toISODate(due),
-      paid_date: '',
+      paid_date: toISODate(today),
       payment_mode: 'upi',
-      status: 'pending',
+      status: 'paid',
       notes: '',
     });
     setOpen(true);
@@ -112,9 +115,28 @@ export function PaymentsClient({ role }: { role: Role }) {
       status: form.status,
       notes: form.notes || null,
     };
-    const { error } = await supabase.from('payments').insert(payload);
+
+    // Avoid creating a duplicate row for the same tenant + period_month.
+    // The rent-tracker / ledger use the first matching row, so a leftover
+    // 'pending' row for the same month would visually override a freshly
+    // inserted 'paid' row. If we find one, UPDATE it in place instead.
+    const { data: existing, error: findErr } = await supabase
+      .from('payments')
+      .select('id, status')
+      .eq('tenant_id', form.tenant_id)
+      .eq('period_month', form.period_month)
+      .neq('status', 'paid') // don't clobber an already-paid receipt
+      .limit(1)
+      .maybeSingle();
+    if (findErr) return toast.error(findErr.message);
+
+    const op = existing
+      ? supabase.from('payments').update(payload).eq('id', existing.id)
+      : supabase.from('payments').insert(payload);
+    const { error } = await op;
     if (error) return toast.error(error.message);
-    toast.success('Payment recorded');
+
+    toast.success(existing ? 'Payment updated' : 'Payment recorded');
     setOpen(false);
     load();
   }
