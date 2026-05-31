@@ -50,6 +50,15 @@ interface BuildingGroup {
 const TRACKER_YEAR = 2026;       // fixed window: Jan 2026 → Dec 2026
 const DUE_SOON_DAYS = 15;
 
+/**
+ * Months on/after this cutoff are NEVER assumed-paid — if there's no payment
+ * row, the dot is upcoming/missed (whichever the due date implies). Older
+ * months keep the legacy "no row ⇒ paid (assumed)" bootstrap so historical
+ * data we migrated in doesn't go red. Bump this whenever fresh-only semantics
+ * should extend further back.
+ */
+const ASSUMED_PAID_CUTOFF = '2026-06-01';
+
 /** Build a yyyy-MM-dd date string for the same day-of-month as `dayOfMonth`,
  *  clamped to the last day of `monthIso` when shorter (e.g. Feb 30 → Feb 28). */
 function dueDateFromDay(monthIso: string, dayOfMonth: number): string {
@@ -183,16 +192,29 @@ export function RentTrackerClient({ role: _role }: { role: Role }) {
           };
         }
 
-        // Past / current month with no payment row → assume PAID
-        // (bootstrap default: until an explicit unpaid row exists).
+        // Past / current month with no payment row.
+        //  - Before the ASSUMED_PAID_CUTOFF → bootstrap-assume paid (legacy
+        //    data that pre-dates the explicit-records-only rule).
+        //  - On/after cutoff → silence means UNPAID. Synthesise the same
+        //    upcoming/missed view as a future month so the cell screams for
+        //    a real receipt instead of going silently green.
+        if (monthIso >= ASSUMED_PAID_CUTOFF) {
+          const due = dueDateFromDay(monthIso, dueDay);
+          const daysToDue = differenceInCalendarDays(parseISO(due), today);
+          return {
+            month: monthIso,
+            status: daysToDue < 0 ? 'missed' : 'upcoming',
+            dueDate: due,
+            daysToDue,
+          };
+        }
         return { month: monthIso, status: 'paid', assumed: true };
       });
 
       // Implicit reconciliation: if a LATER month is marked paid, any earlier
-      // unpaid dots are almost certainly stale 'pending' rows (no landlord
-      // accepts June rent while May is unpaid). Promote them to paid-assumed
-      // so the "Paid till" line + dot strip reflect ground truth instead of
-      // leftover data from before the upsert/auto-due-day fixes landed.
+      // unpaid dots are almost certainly stale 'pending' rows. Promote them
+      // to paid-assumed — but ONLY for months before the cutoff, so we never
+      // launder a missing post-cutoff record into a green tick.
       let lastPaidIdx = -1;
       for (let i = dots.length - 1; i >= 0; i--) {
         if (dots[i].status === 'paid' && !dots[i].assumed) {
@@ -203,6 +225,7 @@ export function RentTrackerClient({ role: _role }: { role: Role }) {
       if (lastPaidIdx > 0) {
         for (let i = 0; i < lastPaidIdx; i++) {
           const d = dots[i];
+          if (d.month >= ASSUMED_PAID_CUTOFF) continue;
           if (d.status === 'missed' || d.status === 'upcoming') {
             dots[i] = { month: d.month, status: 'paid', assumed: true };
           }

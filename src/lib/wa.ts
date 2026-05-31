@@ -37,11 +37,12 @@ export interface ReminderContext {
 export function renderTemplate(tpl: ReminderTemplate, ctx: ReminderContext): string {
   const hostel = ctx.settings?.hostel_name ?? 'Your PG';
   const contact = ctx.settings?.hostel_phone ? ` Contact: ${ctx.settings.hostel_phone}.` : '';
-  const upi = ctx.upiLink
-    ? `\nPay via UPI: ${ctx.upiLink}`
-    : ctx.settings?.upi_vpa
-      ? `\nUPI: ${ctx.settings.upi_vpa}`
-      : '';
+  // Prefer plain-text UPI ID over a pre-filled-amount deep link — the latter
+  // is capped at ₹2k/day to new payees by NPCI. The tenant pastes the VPA in
+  // their UPI app (or taps the optional link, which opens with blank amount).
+  const upi = ctx.settings?.upi_vpa
+    ? `\nUPI ID: ${ctx.settings.upi_vpa}${hostel ? ` (${hostel})` : ''}${ctx.upiLink ? `\nTap to open: ${ctx.upiLink}` : ''}`
+    : '';
   const name = ctx.tenant.name;
 
   switch (tpl) {
@@ -111,11 +112,10 @@ export function buildTenantVars(opts: {
 }): Partial<TenantWaVars> {
   const hostel = opts.settings?.hostel_name ?? 'Your PG';
   const phone = opts.settings?.hostel_phone ?? '';
-  const upi = opts.upiLink
-    ? `\nPay via UPI: ${opts.upiLink}`
-    : opts.settings?.upi_vpa
-      ? `\nUPI: ${opts.settings.upi_vpa}`
-      : '';
+  // See renderTemplate(): plain UPI ID is primary, tap-link is secondary.
+  const upi = opts.settings?.upi_vpa
+    ? `\nUPI ID: ${opts.settings.upi_vpa}${hostel ? ` (${hostel})` : ''}${opts.upiLink ? `\nTap to open: ${opts.upiLink}` : ''}`
+    : '';
   return {
     tenant_name: opts.tenant.name,
     hostel_name: hostel,
