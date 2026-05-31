@@ -23,7 +23,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Pencil, Trash2, Download, MessageCircle, Check, X, Minus, Send } from 'lucide-react';
+import { Plus, Pencil, Trash2, Download, MessageCircle, Check, X, Minus, Send, PauseCircle, PlayCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { downloadCSV, formatDate, formatMonth, photoPublicUrl } from '@/lib/format';
 import { HoldDialog } from '@/components/hold-dialog';
@@ -761,6 +761,7 @@ export function TenantsClient({ role }: { role: Role }) {
               onEdit={openEdit}
               onRemove={remove}
               onWa={setWaTenant}
+              onHold={setHoldTenant}
               paymentSummary={paymentSummaryByTenant}
               dotsByTenant={dotsByTenant}
             />
@@ -862,6 +863,22 @@ export function TenantsClient({ role }: { role: Role }) {
                           <MessageCircle className="size-4 text-green-600" />
                         </Button>
                       )}
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        title={
+                          t.payment_hold
+                            ? `Payment on hold${t.payment_hold_until ? ` until ${t.payment_hold_until}` : ''} — click to update / clear`
+                            : "Pause / hold this tenant's payments"
+                        }
+                        onClick={() => setHoldTenant(t)}
+                      >
+                        {t.payment_hold ? (
+                          <PlayCircle className="size-4 text-amber-600" />
+                        ) : (
+                          <PauseCircle className="size-4" />
+                        )}
+                      </Button>
                       <Button size="icon" variant="ghost" onClick={() => openEdit(t)}>
                         <Pencil className="size-4" />
                       </Button>
@@ -911,7 +928,7 @@ export function TenantsClient({ role }: { role: Role }) {
 // =====================================================================
 
 function GroupedTenants({
-  groups, loading, canDelete, onEdit, onRemove, onWa, paymentSummary, dotsByTenant,
+  groups, loading, canDelete, onEdit, onRemove, onWa, onHold, paymentSummary, dotsByTenant,
 }: {
   groups: BuildingBucket[];
   loading: boolean;
@@ -919,6 +936,7 @@ function GroupedTenants({
   onEdit: (t: Tenant) => void;
   onRemove: (id: string) => void;
   onWa: (t: Tenant) => void;
+  onHold: (t: Tenant) => void;
   paymentSummary: Map<string, PaymentSummary>;
   dotsByTenant: Map<string, MonthDot[]>;
 }) {
@@ -994,6 +1012,18 @@ function GroupedTenants({
                                       {t.status}
                                     </Badge>
                                   )}
+                                  {t.payment_hold && (
+                                    <Badge
+                                      className="ml-1 text-[9px] bg-amber-600 text-white"
+                                      title={
+                                        t.payment_hold_until
+                                          ? `On hold until ${t.payment_hold_until}${t.payment_hold_reason ? ` — ${t.payment_hold_reason}` : ''}`
+                                          : `On hold${t.payment_hold_reason ? ` — ${t.payment_hold_reason}` : ''}`
+                                      }
+                                    >
+                                      on hold
+                                    </Badge>
+                                  )}
                                 </div>
                                 <div className="flex items-center gap-2 mt-0.5">
                                   {t.phone && (
@@ -1023,6 +1053,23 @@ function GroupedTenants({
                                   <MessageCircle className="size-3.5 text-green-600" />
                                 </Button>
                               )}
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-7"
+                                title={
+                                  t.payment_hold
+                                    ? `Payment on hold${t.payment_hold_until ? ` until ${t.payment_hold_until}` : ''} — click to update / clear`
+                                    : "Pause / hold this tenant's payments"
+                                }
+                                onClick={() => onHold(t)}
+                              >
+                                {t.payment_hold ? (
+                                  <PlayCircle className="size-3.5 text-amber-600" />
+                                ) : (
+                                  <PauseCircle className="size-3.5" />
+                                )}
+                              </Button>
                               <Button
                                 size="icon"
                                 variant="ghost"
